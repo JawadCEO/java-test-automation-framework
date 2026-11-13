@@ -9,7 +9,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.sql.SQLException;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -17,9 +18,18 @@ final class BookingApp implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
     private final HttpServer server;
     private final ExecutorService executor = Executors.newFixedThreadPool(8);
-    private final Map<UUID, String> bookings = new ConcurrentHashMap<>();
+    private final BookingDatabase database;
+    private final LongAdder completedRequests = new LongAdder();
+    private final LongAdder clientErrors = new LongAdder();
+    private final LongAdder serverErrors = new LongAdder();
+    private final LongAdder totalDurationNanos = new LongAdder();
+
+    BookingDatabase database() {
+        return database;
+    }
 
     BookingApp() throws IOException {
+        database = new BookingDatabase();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(executor);
         server.createContext("/", this::handle);
@@ -31,22 +41,65 @@ final class BookingApp implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
+        long started = System.nanoTime();
+        String requestId = UUID.randomUUID().toString();
+        exchange.getResponseHeaders().set("X-Request-Id", requestId);
+        String path = exchange.getRequestURI().getPath();
         try (exchange) {
-            String path = exchange.getRequestURI().getPath();
-            String method = exchange.getRequestMethod();
-            if (path.equals("/") && method.equals("GET")) {
-                send(exchange, 200, "text/html", PAGE);
-            } else if (path.equals("/api/bookings") && method.equals("POST")) {
-                createBooking(exchange);
-            } else if (path.startsWith("/api/bookings/") && method.equals("GET")) {
-                findBooking(exchange, path.substring("/api/bookings/".length()));
-            } else {
-                json(exchange, 404, Map.of("error", "Not found"));
+            try {
+                route(exchange, path);
+            } catch (SQLException failure) {
+                System.getLogger(BookingApp.class.getName()).log(
+                    System.Logger.Level.ERROR, "Database failure for request " + requestId, failure);
+                json(exchange, 500, Map.of("error", "Booking storage unavailable"));
+            }
+        } finally {
+            if (path.startsWith("/api/") && exchange.getResponseCode() >= 200) {
+                long duration = System.nanoTime() - started;
+                int status = exchange.getResponseCode();
+                totalDurationNanos.add(duration);
+                if (status >= 500) {
+                    serverErrors.increment();
+                } else if (status >= 400) {
+                    clientErrors.increment();
+                }
+                completedRequests.increment();
+                System.getLogger(BookingApp.class.getName()).log(System.Logger.Level.DEBUG,
+                    () -> String.format("request_id=%s method=%s status=%d duration_ns=%d",
+                        requestId, exchange.getRequestMethod(), status, duration));
             }
         }
     }
 
-    private void createBooking(HttpExchange exchange) throws IOException {
+    private void route(HttpExchange exchange, String path) throws IOException, SQLException {
+        String method = exchange.getRequestMethod();
+        if (path.equals("/") && method.equals("GET")) {
+            send(exchange, 200, "text/html", PAGE);
+        } else if (path.equals("/health") && method.equals("GET")) {
+            boolean ready = database.ready();
+            json(exchange, ready ? 200 : 503, Map.of("status", ready ? "UP" : "DOWN"));
+        } else if (path.equals("/metrics") && method.equals("GET")) {
+            send(exchange, 200, "text/plain; version=0.0.4", """
+                # TYPE booking_api_requests_total counter
+                booking_api_requests_total %d
+                # TYPE booking_api_client_errors_total counter
+                booking_api_client_errors_total %d
+                # TYPE booking_api_server_errors_total counter
+                booking_api_server_errors_total %d
+                # TYPE booking_api_duration_seconds_total counter
+                booking_api_duration_seconds_total %s
+                """.formatted(completedRequests.sum(), clientErrors.sum(), serverErrors.sum(),
+                    totalDurationNanos.sum() / 1_000_000_000.0));
+        } else if (path.equals("/api/bookings") && method.equals("POST")) {
+            createBooking(exchange);
+        } else if (path.startsWith("/api/bookings/") && method.equals("GET")) {
+            findBooking(exchange, path.substring("/api/bookings/".length()));
+        } else {
+            json(exchange, 404, Map.of("error", "Not found"));
+        }
+    }
+
+    private void createBooking(HttpExchange exchange) throws IOException, SQLException {
         var body = exchange.getRequestBody().readNBytes(4097);
         if (body.length > 4096) {
             json(exchange, 413, Map.of("error", "Request too large"));
@@ -65,12 +118,12 @@ final class BookingApp implements AutoCloseable {
             return;
         }
         UUID id = UUID.randomUUID();
-        bookings.put(id, name);
+        database.insert(id, name);
         exchange.getResponseHeaders().set("Location", "/api/bookings/" + id);
         json(exchange, 201, Map.of("id", id, "name", name));
     }
 
-    private void findBooking(HttpExchange exchange, String identifier) throws IOException {
+    private void findBooking(HttpExchange exchange, String identifier) throws IOException, SQLException {
         UUID id;
         try {
             id = UUID.fromString(identifier);
@@ -78,7 +131,7 @@ final class BookingApp implements AutoCloseable {
             json(exchange, 400, Map.of("error", "Invalid booking ID"));
             return;
         }
-        String name = bookings.get(id);
+        String name = database.find(id);
         if (name == null) {
             json(exchange, 404, Map.of("error", "Booking not found"));
             return;
@@ -101,6 +154,7 @@ final class BookingApp implements AutoCloseable {
     public void close() {
         server.stop(0);
         executor.shutdownNow();
+        database.close();
     }
 
     private static final String PAGE = """
