@@ -1,0 +1,28 @@
+# QA KPI dashboard: Pushgateway receives one KPI snapshot per run, Prometheus keeps the history,
+# Grafana renders it. Start with: docker compose -f observability/docker-compose.yml up -d
+services:
+  pushgateway:
+    image: prom/pushgateway:v1.11.0
+    ports: ["9091:9091"]
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=90d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [pushgateway]
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/qa-kpis.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+volumes:
+  prometheus-data:

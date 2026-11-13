@@ -1,0 +1,154 @@
+openapi: 3.0.3
+info:
+  title: Booking API
+  version: 1.1.0
+  description: Seat booking API that the framework treats as its system under test.
+paths:
+  /api/bookings:
+    get:
+      operationId: listBookings
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Most recent bookings first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingPage'
+        '400':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewBooking'
+      responses:
+        '201':
+          description: Booking created
+          headers:
+            Location:
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
+        '415':
+          $ref: '#/components/responses/Error'
+  /api/bookings/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getBooking
+      responses:
+        '200':
+          description: The booking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteBooking
+      responses:
+        '204':
+          description: Booking removed
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Database reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Database unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+components:
+  responses:
+    Error:
+      description: Request rejected
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    NewBooking:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+    Booking:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+    BookingPage:
+      type: object
+      additionalProperties: false
+      required: [total, items]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Booking'
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string

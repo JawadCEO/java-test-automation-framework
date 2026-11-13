@@ -1,4 +1,6 @@
-package com.jawad.qa;
+package com.jawad.qa.observability;
+
+import com.jawad.booking.BookingApp;
 
 import java.time.Duration;
 import java.util.UUID;

@@ -1,4 +1,6 @@
-package com.jawad.qa;
+package com.jawad.qa.ui;
+
+import com.jawad.booking.BookingApp;
 
 import java.time.Duration;
 import org.junit.jupiter.api.Tag;
